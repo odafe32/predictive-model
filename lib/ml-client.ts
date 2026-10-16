@@ -3,8 +3,14 @@
  * Communicates with the Python FastAPI ML service for hypertension predictions.
  */
 
-const ML_SERVICE_URL =
-  process.env.ML_SERVICE_URL || "http://localhost:8000";
+// Normalize: strip trailing slashes so `${URL}/predict` never becomes `//predict`
+const ML_SERVICE_URL = (
+  process.env.ML_SERVICE_URL || "http://localhost:8001"
+).replace(/\/+$/, "");
+
+// Render free tier sleeps after inactivity — first request can take ~60s.
+const FETCH_TIMEOUT_MS = 90_000;
+const RETRIES = 2;
 
 export interface LifestyleInput {
   age: number;
@@ -49,19 +55,35 @@ export async function checkMLHealth(): Promise<HealthCheck> {
 export async function getPrediction(
   input: LifestyleInput
 ): Promise<PredictionResult> {
-  const res = await fetch(`${ML_SERVICE_URL}/predict`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-    cache: "no-store",
-  });
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${ML_SERVICE_URL}/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+        cache: "no-store",
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
 
-  if (!res.ok) {
-    const error = await res.text();
-    throw new Error(`ML service prediction failed: ${error}`);
+      if (!res.ok) {
+        const error = await res.text();
+        throw new Error(`ML service prediction failed: ${res.status} ${error}`);
+      }
+
+      return res.json();
+    } catch (err) {
+      lastError = err;
+      // Retry only on network/timeout errors (Render cold start), not HTTP errors
+      if (err instanceof Error && err.message.startsWith("ML service prediction failed")) {
+        throw err;
+      }
+      if (attempt < RETRIES) {
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      }
+    }
   }
-
-  return res.json();
+  throw lastError;
 }
 
 /**
