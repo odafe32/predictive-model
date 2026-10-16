@@ -1,0 +1,1 @@
+{"venvPath": "ml-service","venv": ".venv","include": ["scripts"],"exclude": ["**/node_modules", "**/.next", "**/__pycache__", "ml-service"],"extraPaths": ["ml-service"]}
